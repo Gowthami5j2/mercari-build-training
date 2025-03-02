@@ -1,6 +1,6 @@
 # Build@Mercari Training Program 
 
-This is [@Gowthami5j2's](https://github.com/Gowthami5j2/mercari-build-training) build training repository.
+This is @Gowthami5j2's build training repository.
 
 Build training の前半では個人で課題に取り組んでもらい、Web開発の基礎知識をつけていただきます。
 ドキュメントには詳細なやり方は記載しません。自身で検索したり、リファレンスを確認したり、チームメイトと協力して各課題をクリアしましょう。
