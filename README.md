@@ -1,8 +1,8 @@
 # Build@Mercari Training Program 
 
-This is Gowthami5j2's build training repository.
+This is [@Gowthami5j2's](https://github.com/Gowthami5j2/mercari-build-training) build training repository.
 
-Build trainingの前半では個人で課題に取り組んでもらい、Web開発の基礎知識をつけていただきます。
+Build training の前半では個人で課題に取り組んでもらい、Web開発の基礎知識をつけていただきます。
 ドキュメントには詳細なやり方は記載しません。自身で検索したり、リファレンスを確認したり、チームメイトと協力して各課題をクリアしましょう。
 
 ドキュメントには以下のような記載があるので、課題を進める際に参考にしてください。
@@ -45,7 +45,7 @@ The following icons indicate pointers for
 
 ### Which one should I choose, Python or Go?
 
-* Mercari uses Go for building the backend of their applications. If you like taking on challenges, using Go will let you develop in an environment similar to Mercari's.
+* Mercari uses Go for building the backend of their applications. If you like taking on challenges, using Go    will let you develop in an environment similar to Mercari's.
 * Python is a relatively easy-to-write programming language. Choosing Python may make it easier for you to understand the overall flow.
 
 
