@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
 var db *sql.DB
+const maxUploadSize = 10 << 20 // 10MB
 
 // Item struct
 type Item struct {
@@ -33,7 +35,6 @@ func initDB() {
 		log.Fatal(err)
 	}
 
-	// Create tables if not exist
 	query := `
 	CREATE TABLE IF NOT EXISTS categories (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,18 +47,24 @@ func initDB() {
 		image_name TEXT NOT NULL,
 		FOREIGN KEY (category_id) REFERENCES categories(id)
 	);`
+
 	_, err = db.Exec(query)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
-		os.Mkdir("uploads", os.ModePerm)
-	}
-
+	createUploadsDir()
 	fmt.Println("Database initialized!")
 }
 
+// Creates uploads directory if not exists
+func createUploadsDir() {
+	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
+		os.Mkdir("uploads", os.ModePerm)
+	}
+}
+
+// Saves image and returns its hashed filename
 func saveImage(file io.Reader) (string, error) {
 	data, err := io.ReadAll(file)
 	if err != nil {
@@ -76,12 +83,20 @@ func saveImage(file io.Reader) (string, error) {
 	return hashString + ".jpg", nil
 }
 
+// Handles fetching items
 func getItemsHandler(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query(`
-        SELECT items.id, items.name, categories.name, items.image_name
-        FROM items
-        JOIN categories ON items.category_id = categories.id
-    `)
+	stmt, err := db.Prepare(`
+		SELECT items.id, items.name, categories.name, items.image_name
+		FROM items
+		JOIN categories ON items.category_id = categories.id
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer stmt.Close()
+
+	rows, err := stmt.Query()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -91,8 +106,7 @@ func getItemsHandler(w http.ResponseWriter, r *http.Request) {
 	var items []Item
 	for rows.Next() {
 		var item Item
-		err := rows.Scan(&item.ID, &item.Name, &item.Category, &item.ImageName)
-		if err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.Category, &item.ImageName); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -103,6 +117,7 @@ func getItemsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"items": items})
 }
 
+// Handles searching items
 func searchItemsHandler(w http.ResponseWriter, r *http.Request) {
 	keyword := r.URL.Query().Get("keyword")
 	if keyword == "" {
@@ -110,11 +125,19 @@ func searchItemsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.Query(`
-        SELECT items.name, categories.name 
-        FROM items
-        JOIN categories ON items.category_id = categories.id
-        WHERE items.name LIKE ?`, "%"+keyword+"%")
+	stmt, err := db.Prepare(`
+		SELECT items.name, categories.name 
+		FROM items
+		JOIN categories ON items.category_id = categories.id
+		WHERE items.name LIKE ?
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer stmt.Close()
+
+	rows, err := stmt.Query("%" + keyword + "%")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -124,8 +147,7 @@ func searchItemsHandler(w http.ResponseWriter, r *http.Request) {
 	var items []Item
 	for rows.Next() {
 		var item Item
-		err := rows.Scan(&item.Name, &item.Category)
-		if err != nil {
+		if err := rows.Scan(&item.Name, &item.Category); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -136,8 +158,9 @@ func searchItemsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"items": items})
 }
 
+// Handles adding new items
 func postItemsHandler(w http.ResponseWriter, r *http.Request) {
-	err := r.ParseMultipartForm(10 << 20) // 10MB limit
+	err := r.ParseMultipartForm(maxUploadSize)
 	if err != nil {
 		http.Error(w, "File size too large", http.StatusBadRequest)
 		return
@@ -145,6 +168,12 @@ func postItemsHandler(w http.ResponseWriter, r *http.Request) {
 
 	name := r.FormValue("name")
 	categoryID := r.FormValue("category_id")
+	categoryIDInt, err := strconv.Atoi(categoryID)
+	if err != nil {
+		http.Error(w, "Invalid category_id", http.StatusBadRequest)
+		return
+	}
+
 	file, _, err := r.FormFile("image")
 	if err != nil {
 		http.Error(w, "Image file is required", http.StatusBadRequest)
@@ -158,54 +187,33 @@ func postItemsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = db.Exec("INSERT INTO items (name, category_id, image_name) VALUES (?, ?, ?)",
-		name, categoryID, hashFilename)
+	tx, err := db.Begin()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	_, err = tx.Exec("INSERT INTO items (name, category_id, image_name) VALUES (?, ?, ?)", name, categoryIDInt, hashFilename)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	tx.Commit()
 
 	w.WriteHeader(http.StatusCreated)
 	fmt.Fprintln(w, "Item added successfully!")
 }
 
-func deleteItemHandler(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("id")
-	if id == "" {
-		http.Error(w, "Missing item ID", http.StatusBadRequest)
-		return
-	}
-
-	var imageName string
-	err := db.QueryRow("SELECT image_name FROM items WHERE id = ?", id).Scan(&imageName)
-	if err != nil {
-		http.Error(w, "Item not found", http.StatusNotFound)
-		return
-	}
-
-	imagePath := filepath.Join("uploads", imageName)
-	os.Remove(imagePath)
-
-	_, err = db.Exec("DELETE FROM items WHERE id = ?", id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, "Item deleted successfully!")
-}
-
 func main() {
 	initDB()
 	http.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" {
+		switch r.Method {
+		case "GET":
 			getItemsHandler(w, r)
-		} else if r.Method == "POST" {
+		case "POST":
 			postItemsHandler(w, r)
-		} else if r.Method == "DELETE" {
-			deleteItemHandler(w, r)
-		} else {
+		default:
 			http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
 		}
 	})
