@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	//"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -27,28 +26,37 @@ type Item struct {
 // Initialize the database
 func initDB() {
 	var err error
-	dbPath := "./db/mercari.sqlite3"
 
-	// Create the database directory if it doesn't exist
-	os.MkdirAll(filepath.Dir(dbPath), os.ModePerm)
-
-	db, err = sql.Open("sqlite3", dbPath)
-	if err != nil {
-		log.Fatal("Failed to open database:", err)
+	// Use environment variable for DB path (Docker compatibility)
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "/app/db/mercari.sqlite3" // Docker-compatible path
 	}
 
-	// Create tables if they don't exist
+	// Ensure directory exists
+	err = os.MkdirAll(filepath.Dir(dbPath), os.ModePerm)
+	if err != nil {
+		log.Fatalf("Failed to create DB directory: %v", err)
+	}
+
+	// Open SQLite database
+	db, err = sql.Open("sqlite3", dbPath)
+	if err != nil {
+		log.Fatalf("Failed to open database: %v", err)
+	}
+
+	// Create tables
 	createTables()
 }
 
-// Create tables
+// Create tables if they don't exist
 func createTables() {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS categories (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL UNIQUE
 		);
-		
+
 		CREATE TABLE IF NOT EXISTS items (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -58,36 +66,38 @@ func createTables() {
 		);
 	`)
 	if err != nil {
-		log.Fatal("Failed to create tables:", err)
+		log.Fatalf("Failed to create tables: %v", err)
 	}
 }
 
-// Add an item
+// Add an item to the database
 func addItem(c *gin.Context) {
 	name := c.PostForm("name")
 	category := c.PostForm("category")
 
-	// Validate required fields
 	if name == "" || category == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name and category are required"})
 		return
 	}
 
-	// Handle image upload
 	file, err := c.FormFile("image")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "image file is required"})
 		return
 	}
 
-	// Save the image
-	imagePath := "./images/" + file.Filename
-	c.SaveUploadedFile(file, imagePath)
+	// Save the image in the Docker volume directory
+	imagePath := "/app/images/" + file.Filename
+	if err := c.SaveUploadedFile(file, imagePath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save image"})
+		return
+	}
 
-	// Check if category exists, otherwise insert it
+	// Handle category
 	var categoryID int
 	err = db.QueryRow("SELECT id FROM categories WHERE name = ?", category).Scan(&categoryID)
 	if err == sql.ErrNoRows {
+		// Insert new category if it doesn't exist
 		result, err := db.Exec("INSERT INTO categories (name) VALUES (?)", category)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert category"})
@@ -100,7 +110,7 @@ func addItem(c *gin.Context) {
 		return
 	}
 
-	// Insert item into database
+	// Insert item
 	_, err = db.Exec("INSERT INTO items (name, category_id, image_name) VALUES (?, ?, ?)", name, categoryID, file.Filename)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert item"})
@@ -131,7 +141,7 @@ func getItem(c *gin.Context) {
 	c.JSON(http.StatusOK, item)
 }
 
-// Search items
+// Search for items by keyword
 func searchItems(c *gin.Context) {
 	keyword := c.Query("keyword")
 	keyword = strings.TrimSpace(keyword)
@@ -150,7 +160,10 @@ func searchItems(c *gin.Context) {
 	var items []Item
 	for rows.Next() {
 		var item Item
-		rows.Scan(&item.ID, &item.Name, &item.Category, &item.ImageName)
+		if err := rows.Scan(&item.ID, &item.Name, &item.Category, &item.ImageName); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse item"})
+			return
+		}
 		items = append(items, item)
 	}
 
@@ -159,9 +172,10 @@ func searchItems(c *gin.Context) {
 
 func main() {
 	initDB()
+
 	r := gin.Default()
 
-	// Enable CORS
+	// Enable CORS for frontend access
 	r.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -173,13 +187,24 @@ func main() {
 		c.Next()
 	})
 
+	// Add "/" route to avoid 404
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Welcome to the Mercari API. Use /items, /items/:id, or /search to access data.",
+		})
+	})
+
 	// Routes
 	r.POST("/items", addItem)
 	r.GET("/items/:id", getItem)
 	r.GET("/search", searchItems)
 
-	// Run server
-	port := "8080"
+	// Get port from environment variables (Docker flexibility)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // Default port
+	}
+
 	fmt.Println("Server running on port " + port)
 	r.Run(":" + port)
 }
